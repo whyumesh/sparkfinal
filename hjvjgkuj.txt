@@ -1,0 +1,33 @@
+1. Are the output files 100% accurate?
+Within the pipeline, yes – they are consistent and validated.
+Variance vs baseline
+The script recomputes Variance >25% from the Sum of last 3 months and the product columns and raises an error if any row disagrees (validate_variance_flags in the division scripts). So:
+Variance flags,
+Sum of last 3 months, and
+Product totals
+are internally consistent – no silent variance math errors.
+Rest of the logic
+Slotmax (best Rx per doctor/month), filtering (report month only, doctors with all 4 brands), Territory Code = IT-only, and hierarchy from the raw DCR are applied the same way for every row. Blank hierarchy is written as #N/A.
+What “100% accurate” cannot guarantee:
+Source data
+If the DCR_NEW XLSX files are wrong or incomplete (wrong dates, missing months, wrong Territory Code, duplicates), the outputs will reflect that. The code doesn’t check that the raw DCR is “correct,” only that it’s processed consistently.
+Business rules
+Hierarchy (who is ABM/ZBM, reporting lines) is derived from the raw; the code doesn’t know your org chart. So “accuracy” of hierarchy is only as good as the raw data and your business validation.
+So: 100% accurate in terms of “logic and internal consistency” (variance, sums, structure, #N/A). Not 100% guaranteed against source-data or business-rule issues unless the business has validated the DCR_NEW and hierarchy.
+2. Ready to send to the business?
+Yes – suitable to send for review and use, with a short handover note.
+Structure and logic
+Outputs follow the agreed design: division-specific brands, Sum of last 3 months, variance flags, Territory Code = IT-only, hierarchy columns, #N/A where hierarchy is missing.
+Quality checks in place
+Variance is validated before write; if the script runs to completion, variance flags match the recomputed values.
+Recommended business checks before final sign-off:
+Sample checks
+Pick a few doctors and confirm in Excel:
+(Sum of last 3 months) / 3 as baseline vs Feb total, and that Variance/Increasing/Decreasing match the stated rules (e.g. >25%, ≥25%, ≤−25%).
+Hierarchy
+Spot-check that ABM/ZBM and designations look correct for a sample of rows; confirm that #N/A is acceptable where it appears.
+Source
+Confirm that the DCR_NEW files used are the agreed, final raw DCR for the report period.
+Bottom line:
+Technically: Outputs are 100% consistent with the implemented logic and are validated where variance is concerned.
+For business: They are ready to send for review; business should do the above spot-checks and confirm the source DCR and hierarchy before treating them as 100% accurate for reporting.

@@ -36,7 +36,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 ALLOWED_BRANDS = ["UDILIV", "COLOSPA", "FLORACHAMP", "EZYBIXY"]
 DEFAULT_INPUT = PROJECT_DIR / "DCR_RAW_STANDARDIZED_4div_2025-11-01_2026-02-28_Div30.csv"
-DEFAULT_OUTPUT = PROJECT_DIR / "out_jan_div30_tbm.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "out_jan_div30.csv"
 DEFAULT_REPORT_MONTH = "2026-02"
 DEFAULT_TEMPLATE = PROJECT_DIR / "Copy of Data Dump.csv"
 DEFAULT_HIERARCHY = PROJECT_DIR / "hierarchy.csv"
@@ -262,18 +262,6 @@ def _norm_alias(val) -> str:
     if pd.isna(val):
         return ""
     return re.sub(r"\.0$", "", str(val).strip())
-
-
-def _extract_tbm_from_territory_code(val) -> str:
-    """Extract TBM (code starting with IT) from Territory Code for unique-per-TBM-per-month grain."""
-    if pd.isna(val) or str(val).strip() == "":
-        return ""
-    parts = re.split(r"[\s;]+", str(val).strip())
-    for p in parts:
-        p = p.strip().rstrip(";")
-        if p.upper().startswith("IT"):
-            return p
-    return ""
 
 
 def fill_empty_from_hierarchy(
@@ -601,12 +589,10 @@ def add_variance_flags_octdec_vs_jan(
     report_jan: pd.Period,
     baseline_months: List[pd.Period],
     product_cols: List[str],
-    tbm_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Variance flags based on Nov-Jan average total Rx vs February (report month) total Rx (4 brands only).
-    When tbm_col is set, grain is (TBM, doctor); otherwise doctor only.
-    - Baseline = avg(Nov total, Dec total, Jan total) per (TBM, doctor) or per doctor.
+    - Baseline = avg(Nov total, Dec total, Jan total) per doctor.
     - If |report_total - avg_baseline| / avg_baseline > 25% then Variance >25% = TRUE.
     - Increasing: pct_diff >= 25%. Decreasing: pct_diff <= -25%.
     - All Zero: report month total Rx is 0.
@@ -626,176 +612,98 @@ def add_variance_flags_octdec_vs_jan(
         baseline_months[1],
         baseline_months[2],
     )
-    if tbm_col and tbm_col in out.columns:
-        group_keys = [tbm_col, doctor_col]
-        all_pairs = out[group_keys].drop_duplicates()
-        all_index = all_pairs.set_index(group_keys).index
-        nov_totals = (
-            out.loc[out[monthperiod_col] == nov_period]
-            .groupby(group_keys)["_total_rx"]
-            .sum()
-            .reindex(all_index)
-            .fillna(0)
-        )
-        dec_totals = (
-            out.loc[out[monthperiod_col] == dec_period]
-            .groupby(group_keys)["_total_rx"]
-            .sum()
-            .reindex(all_index)
-            .fillna(0)
-        )
-        jan_totals = (
-            out.loc[out[monthperiod_col] == jan_period]
-            .groupby(group_keys)["_total_rx"]
-            .sum()
-            .reindex(all_index)
-            .fillna(0)
-        )
-        report_totals = (
-            out.loc[out[monthperiod_col] == report_jan]
-            .groupby(group_keys)["_total_rx"]
-            .sum()
-            .reindex(all_index)
-            .fillna(0)
-        )
-        avg_baseline = (nov_totals + dec_totals + jan_totals) / 3.0
-        feb_total = report_totals
-        mask_both_zero = (avg_baseline == 0) & (feb_total == 0)
-        mask_baseline_zero_feb_positive = (avg_baseline == 0) & (feb_total > 0)
-        percent_diff = np.where(
+    all_doctors = out[doctor_col].unique()
+
+    nov_totals = (
+        out.loc[out[monthperiod_col] == nov_period]
+        .groupby(doctor_col)["_total_rx"]
+        .sum()
+        .reindex(all_doctors)
+        .fillna(0)
+    )
+    dec_totals = (
+        out.loc[out[monthperiod_col] == dec_period]
+        .groupby(doctor_col)["_total_rx"]
+        .sum()
+        .reindex(all_doctors)
+        .fillna(0)
+    )
+    jan_totals = (
+        out.loc[out[monthperiod_col] == jan_period]
+        .groupby(doctor_col)["_total_rx"]
+        .sum()
+        .reindex(all_doctors)
+        .fillna(0)
+    )
+    report_totals = (
+        out.loc[out[monthperiod_col] == report_jan]
+        .groupby(doctor_col)["_total_rx"]
+        .sum()
+        .reindex(all_doctors)
+        .fillna(0)
+    )
+
+    # Reuse baseline and report totals (no recomputation in logic below)
+    avg_baseline = (nov_totals + dec_totals + jan_totals) / 3.0
+    feb_total = report_totals  # alias for clarity
+
+    # Safe variance logic: avoid division by zero; variance = TRUE only when ABS(% diff) > 25 (strictly >)
+    # Case 1: avg_baseline == 0 AND feb_total == 0 -> no change, no variance
+    mask_both_zero = (avg_baseline == 0) & (feb_total == 0)
+    # Case 2: avg_baseline == 0 AND feb_total > 0 -> avoid division by zero; treat as infinite increase
+    mask_baseline_zero_feb_positive = (avg_baseline == 0) & (feb_total > 0)
+    # Case 3: else -> percent_diff = (feb_total - avg_baseline) / avg_baseline * 100
+    mask_normal = ~mask_both_zero & ~mask_baseline_zero_feb_positive
+
+    percent_diff = np.where(
+        mask_both_zero,
+        0.0,
+        np.where(
+            mask_baseline_zero_feb_positive,
+            np.nan,  # undefined (no division); flags set below
+            ((feb_total - avg_baseline) / avg_baseline) * 100.0,
+        ),
+    )
+
+    # Variance = TRUE only when ABS(% diff) > 25 (not >=)
+    variance_ser = pd.Series(
+        np.where(
             mask_both_zero,
-            0.0,
-            np.where(
-                mask_baseline_zero_feb_positive,
-                np.nan,
-                ((feb_total - avg_baseline) / avg_baseline) * 100.0,
-            ),
-        )
-        variance_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, True, np.abs(percent_diff) > 25.0),
-            ),
-            index=report_totals.index,
-        )
-        increasing_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, True, percent_diff >= 25.0),
-            ),
-            index=report_totals.index,
-        )
-        decreasing_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, False, percent_diff <= -25.0),
-            ),
-            index=report_totals.index,
-        )
-        all_zero_ser = (feb_total == 0)
-        sum_last_3_months = nov_totals + dec_totals + jan_totals
-        is_report = out[monthperiod_col] == report_jan
-        out["Sum of last 3 months"] = out.apply(
-            lambda r: sum_last_3_months.get((r[tbm_col], r[doctor_col]), 0), axis=1
-        )
-        out["All Zero"] = out.apply(
-            lambda r: all_zero_ser.get((r[tbm_col], r[doctor_col]), True), axis=1
-        )
-        out["Variance >25%"] = out.apply(
-            lambda r: variance_ser.get((r[tbm_col], r[doctor_col]), False), axis=1
-        )
-        out["Increasing"] = out.apply(
-            lambda r: increasing_ser.get((r[tbm_col], r[doctor_col]), False), axis=1
-        )
-        out["Decreasing"] = out.apply(
-            lambda r: decreasing_ser.get((r[tbm_col], r[doctor_col]), False), axis=1
-        )
-        out.loc[~is_report, "All Zero"] = False
-        out.loc[~is_report, "Variance >25%"] = False
-        out.loc[~is_report, "Increasing"] = False
-        out.loc[~is_report, "Decreasing"] = False
-    else:
-        all_doctors = out[doctor_col].unique()
-        nov_totals = (
-            out.loc[out[monthperiod_col] == nov_period]
-            .groupby(doctor_col)["_total_rx"]
-            .sum()
-            .reindex(all_doctors)
-            .fillna(0)
-        )
-        dec_totals = (
-            out.loc[out[monthperiod_col] == dec_period]
-            .groupby(doctor_col)["_total_rx"]
-            .sum()
-            .reindex(all_doctors)
-            .fillna(0)
-        )
-        jan_totals = (
-            out.loc[out[monthperiod_col] == jan_period]
-            .groupby(doctor_col)["_total_rx"]
-            .sum()
-            .reindex(all_doctors)
-            .fillna(0)
-        )
-        report_totals = (
-            out.loc[out[monthperiod_col] == report_jan]
-            .groupby(doctor_col)["_total_rx"]
-            .sum()
-            .reindex(all_doctors)
-            .fillna(0)
-        )
-        avg_baseline = (nov_totals + dec_totals + jan_totals) / 3.0
-        feb_total = report_totals
-        mask_both_zero = (avg_baseline == 0) & (feb_total == 0)
-        mask_baseline_zero_feb_positive = (avg_baseline == 0) & (feb_total > 0)
-        percent_diff = np.where(
+            False,
+            np.where(mask_baseline_zero_feb_positive, True, np.abs(percent_diff) > 25.0),
+        ),
+        index=report_totals.index,
+    )
+    increasing_ser = pd.Series(
+        np.where(
             mask_both_zero,
-            0.0,
-            np.where(
-                mask_baseline_zero_feb_positive,
-                np.nan,
-                ((feb_total - avg_baseline) / avg_baseline) * 100.0,
-            ),
-        )
-        variance_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, True, np.abs(percent_diff) > 25.0),
-            ),
-            index=report_totals.index,
-        )
-        increasing_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, True, percent_diff >= 25.0),
-            ),
-            index=report_totals.index,
-        )
-        decreasing_ser = pd.Series(
-            np.where(
-                mask_both_zero,
-                False,
-                np.where(mask_baseline_zero_feb_positive, False, percent_diff <= -25.0),
-            ),
-            index=report_totals.index,
-        )
-        all_zero_ser = (feb_total == 0)
-        sum_last_3_months = nov_totals + dec_totals + jan_totals
-        out["Sum of last 3 months"] = out[doctor_col].map(lambda d: sum_last_3_months.get(d, 0))
-        is_report = out[monthperiod_col] == report_jan
-        out["All Zero"] = out[doctor_col].map(lambda d: all_zero_ser.get(d, True))
-        out["Variance >25%"] = out[doctor_col].map(lambda d: variance_ser.get(d, False))
-        out["Increasing"] = out[doctor_col].map(lambda d: increasing_ser.get(d, False))
-        out["Decreasing"] = out[doctor_col].map(lambda d: decreasing_ser.get(d, False))
-        out.loc[~is_report, "All Zero"] = False
-        out.loc[~is_report, "Variance >25%"] = False
-        out.loc[~is_report, "Increasing"] = False
-        out.loc[~is_report, "Decreasing"] = False
+            False,
+            np.where(mask_baseline_zero_feb_positive, True, percent_diff >= 25.0),
+        ),
+        index=report_totals.index,
+    )
+    decreasing_ser = pd.Series(
+        np.where(
+            mask_both_zero,
+            False,
+            np.where(mask_baseline_zero_feb_positive, False, percent_diff <= -25.0),
+        ),
+        index=report_totals.index,
+    )
+    all_zero_ser = (feb_total == 0)
+
+    sum_last_3_months = nov_totals + dec_totals + jan_totals
+    out["Sum of last 3 months"] = out[doctor_col].map(lambda d: sum_last_3_months.get(d, 0))
+
+    is_report = out[monthperiod_col] == report_jan
+    out["All Zero"] = out[doctor_col].map(lambda d: all_zero_ser.get(d, True))
+    out["Variance >25%"] = out[doctor_col].map(lambda d: variance_ser.get(d, False))
+    out["Increasing"] = out[doctor_col].map(lambda d: increasing_ser.get(d, False))
+    out["Decreasing"] = out[doctor_col].map(lambda d: decreasing_ser.get(d, False))
+    out.loc[~is_report, "All Zero"] = False
+    out.loc[~is_report, "Variance >25%"] = False
+    out.loc[~is_report, "Increasing"] = False
+    out.loc[~is_report, "Decreasing"] = False
 
     out = out.drop(columns=["_total_rx"], errors="ignore")
     return out
@@ -980,18 +888,10 @@ def build_output_in_template_format(
     if report_jan not in df["_MonthPeriod"].values:
         raise ValueError(f"Report month {report_jan} has no data. Check --report-month and input dates.")
 
-    # Grain: unique per TBM (Territory Code IT*) per Account: Customer Code per month
-    territory_code_col = resolve_col(cols, "Territory Code")
-    if territory_code_col and territory_code_col in df.columns:
-        df["_TBM"] = df[territory_code_col].map(_extract_tbm_from_territory_code)
-    else:
-        df["_TBM"] = ""
-    tbm_col = "_TBM"
-    group_cols = [tbm_col, doctor_col, "_MonthPeriod"]
-
     # ---------------------------
-    # SlotMAX extraction -> long table (TBM, Doctor, MonthPeriod, Brand, Rx)
+    # SlotMAX extraction -> long table (Doctor, MonthPeriod, Brand, Rx)
     # ---------------------------
+    group_cols = [doctor_col, "_MonthPeriod"]
     tie_cols = [date_col] + ([filed_date_col] if filed_date_col in df.columns else [])
 
     parts = []
@@ -1006,7 +906,7 @@ def build_output_in_template_format(
         # Keep 0's, blanks, NaN: do not dropna on Rx
 
         sort_by = group_cols + ["Rx"] + tie_cols
-        ascending = [True, True, True] + [False] + [False] * len(tie_cols)
+        ascending = [True, True] + [False] + [False] * len(tie_cols)
 
         tmp = tmp.sort_values(sort_by, ascending=ascending, kind="mergesort", na_position="last")
         best = tmp.drop_duplicates(subset=group_cols, keep="first").copy()
@@ -1019,7 +919,7 @@ def build_output_in_template_format(
 
     # Aggregate same brand across slots -> max Rx (NaN preserved when all are NaN)
     agg = (
-        long_df.groupby([tbm_col, doctor_col, "_MonthPeriod", "Brand"], as_index=False)["Rx"]
+        long_df.groupby([doctor_col, "_MonthPeriod", "Brand"], as_index=False)["Rx"]
         .max()
     )
 
@@ -1035,9 +935,12 @@ def build_output_in_template_format(
     )
 
     # Pivot to product columns (only the 4 allowed brands)
+    # Build pivot with only needed brands (template products are column names)
+    # Here we assume Brand names in data correspond to these template product column names after normalization.
+    # i.e. 'UDILIV' in data -> column UDILIV
     pivot = (
         agg.pivot_table(
-            index=[tbm_col, doctor_col, "_MonthPeriod"],
+            index=[doctor_col, "_MonthPeriod"],
             columns="Brand",
             values="Rx",
             aggfunc="max",
@@ -1051,32 +954,33 @@ def build_output_in_template_format(
         if p not in pivot.columns:
             pivot[p] = np.nan
 
-    pivot = pivot[[tbm_col, doctor_col, "_MonthPeriod"] + product_cols]
+    pivot = pivot[[doctor_col, "_MonthPeriod"] + product_cols]
 
-    # Filter 1: only (TBM, doctor) pairs who have all 4 brands with at least one numeric (0+) Rx across the four months
+    # Filter 1: only doctors who have all 4 brands with at least one numeric (0+) Rx across the four months
     agg_numeric = agg.dropna(subset=["Rx"])
-    tbm_doctor_brands = agg_numeric.groupby([tbm_col, doctor_col])["Brand"].apply(lambda x: set(x.unique()))
-    valid_pairs = tbm_doctor_brands[tbm_doctor_brands.map(lambda b: set(product_cols).issubset(b))].index
+    doctor_brands = agg_numeric.groupby(doctor_col)["Brand"].apply(lambda x: set(x.unique()))
+    valid_doctors = doctor_brands[doctor_brands.map(lambda b: set(product_cols).issubset(b))].index
 
     # ---------------------------
-    # Representative base row per (TBM, Doctor, MonthPeriod)
+    # Representative base row per (Doctor, MonthPeriod)
     # ---------------------------
-    base_sort_cols = [tbm_col, doctor_col, "_MonthPeriod", date_col] + ([filed_date_col] if filed_date_col in df.columns else [])
+    base_sort_cols = [doctor_col, "_MonthPeriod", date_col] + ([filed_date_col] if filed_date_col in df.columns else [])
     base_sorted = df.sort_values(
         base_sort_cols,
-        ascending=[True, True, True, False] + ([False] if filed_date_col in df.columns else []),
+        ascending=[True, True, False] + ([False] if filed_date_col in df.columns else []),
         kind="mergesort"
     )
-    base = base_sorted.drop_duplicates(subset=[tbm_col, doctor_col, "_MonthPeriod"], keep="first").copy()
+    base = base_sorted.drop_duplicates(subset=[doctor_col, "_MonthPeriod"], keep="first").copy()
 
     # Merge products
-    out = base.merge(pivot, on=[tbm_col, doctor_col, "_MonthPeriod"], how="left")
+    out = base.merge(pivot, on=[doctor_col, "_MonthPeriod"], how="left")
 
     # Coerce to numeric but keep NaN (do not fill with 0)
     for p in product_cols:
         out[p] = pd.to_numeric(out[p], errors="coerce")
 
-    # Variance flags: Nov-Jan average vs February (4 brands only); grain = (TBM, doctor)
+    # Variance flags: Nov-Jan average vs February (4 brands only)
+    # Rule: avg(Nov,Dec,Jan) total Rx vs Feb total Rx; |pct diff|>25% => Variance >25%; Increasing >=25%, Decreasing <=-25%
     out = add_variance_flags_octdec_vs_jan(
         out,
         doctor_col=doctor_col,
@@ -1084,7 +988,6 @@ def build_output_in_template_format(
         report_jan=report_jan,
         baseline_months=baseline_months,
         product_cols=product_cols,
-        tbm_col=tbm_col,
     )
 
     # Ensure flags exist
@@ -1103,14 +1006,9 @@ def build_output_in_template_format(
     for f in flag_cols:
         out[f] = out[f].apply(format_bool_excel_style)
 
-    # Output only report month (Feb) rows and only valid (TBM, doctor) pairs (all 4 brands present)
-    valid_set = set(valid_pairs)
-    out["_tbm_doc"] = list(zip(out[tbm_col], out[doctor_col]))
-    out = out[(out["_MonthPeriod"] == report_jan) & (out["_tbm_doc"].map(lambda x: x in valid_set))].copy()
-    out = out.drop(columns=["_MonthPeriod", "_tbm_doc"], errors="ignore")
-    # Territory Code in output = TBM (IT only) for this row
-    if "Territory Code" in out.columns:
-        out["Territory Code"] = out[tbm_col]
+    # Output only report month (Feb) rows and only valid_doctors (all 4 brands present)
+    out = out[(out["_MonthPeriod"] == report_jan) & (out[doctor_col].isin(valid_doctors))].copy()
+    out = out.drop(columns=["_MonthPeriod"], errors="ignore")
 
     # Validate variance flags: recompute and assert every row matches (before formatting booleans)
     validate_variance_flags(out, product_cols)

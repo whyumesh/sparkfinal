@@ -1,0 +1,99 @@
+Here’s a **simple, short, crisp** explanation of the output file and why it matters for business — no technical jargon.
+
+***
+
+# ✅ **Understanding Your Output File (Easy Explanation)**
+
+Your final output file contains **MSL coverage details** for the month.  
+Each column has a clear purpose.
+
+Below is the meaning of each important column:
+
+***
+
+## 🟦 **1. Account: Customer Code**
+
+*   This is the **unique doctor code**.
+*   It identifies each doctor in your ABM report.
+
+***
+
+## 🟦 **2. MSL Dr**
+
+*   **TRUE** → This doctor belongs to the **MSL universe** (meaning MSL is responsible for this doctor).
+*   **FALSE** → Not part of MSL universe.
+
+***
+
+## 🟦 **3. Visited This Month**
+
+*   **TRUE** → Doctor was **visited by MSL during the selected month** (Jan 2026 in your script).
+*   **FALSE** → No visit done in that month.
+
+***
+
+## 🟦 **4. Doctors list (MSL doctors)**
+
+*   Total **number of MSL doctors in the hierarchy file**.
+*   Same number repeats on each row as a KPI indicator.
+
+***
+
+## 🟦 **5. Doctors visit in that month (DCR report)**
+
+*   How many MSL doctors were actually **visited** in that month.
+*   Also repeated on each row for reference.
+
+***
+
+## 🟦 **6. Coverage %**
+
+*   Formula:
+        (Visited MSL Doctors / Total MSL Doctors) × 100
+*   Shows **how much of the MSL universe was covered**.
+
+***
+
+# 📌 **What does this output mean for the business? (Simple Explanation)**
+
+### 1️⃣ **Know the full universe of doctors**
+
+Business now has a **clean, accurate list of targeted MSL doctors**.
+
+### 2️⃣ **Know which doctors were actually visited**
+
+The “Visited This Month” column directly shows whether activity happened or not.
+
+### 3️⃣ **Measure performance (Coverage %)**
+
+Leadership can instantly see:
+
+*   How many doctors MSL should cover
+*   How many were covered
+*   Percentage of coverage for that month
+
+This is a **key KPI** for MSL teams.
+
+### 4️⃣ **Identify gaps**
+
+Doctors with:
+
+*   **MSL Dr = TRUE**
+*   **Visited This Month = FALSE**  
+    show clearly which doctors were **missed** and need follow‑up.
+
+### 5️⃣ **Supports planning and accountability**
+
+*   Helps managers track productivity
+*   Helps MSL teams plan next month’s engagements
+*   Ensures proper coverage across geography/divisions
+
+***
+
+# 🎯 **In one line: What is the business use?**
+
+**The file tells Abbott how effectively the MSL team is covering the required doctors every month — helping measure performance, find gaps, and improve field execution.**
+
+***
+
+If you want, I can also summarize the output in a small **one-page explanation** or prepare a **PPT slide** for your manager.

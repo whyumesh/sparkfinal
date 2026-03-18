@@ -206,7 +206,7 @@ DOCTOR_ID_COL = "Assignment"
 dcr[DOCTOR_ID_COL] = dcr[DOCTOR_ID_COL].apply(norm_doc_id)
 # >>> End minimal fix <<<
 
-# Doctor key = (Account: Customer Code, Assignment) for identification
+# Doctor key parts (account/customer code) for identification
 ACCOUNT_CUSTOMER_COL = None
 for c in ["Account: Customer Code", "Customer Code", "Account"]:
     if c in dcr.columns:
@@ -216,6 +216,21 @@ if ACCOUNT_CUSTOMER_COL is not None:
     dcr["_acc_code"] = dcr[ACCOUNT_CUSTOMER_COL].map(lambda x: norm_code(x) if pd.notna(x) else "")
 else:
     dcr["_acc_code"] = ""
+
+# Stable doctor identity:
+# Prefer Account ID_18 (unique account id), else Account: Customer Code, else Assignment.
+ACCOUNT_ID_COL = "Account ID_18" if "Account ID_18" in dcr.columns else None
+if ACCOUNT_ID_COL is not None:
+    dcr["_acc_id"] = dcr[ACCOUNT_ID_COL].map(lambda x: norm_code(x) if pd.notna(x) else "")
+else:
+    dcr["_acc_id"] = ""
+
+DOCTOR_KEY_COL = "_doctor_key"
+dcr[DOCTOR_KEY_COL] = np.where(
+    dcr["_acc_id"] != "",
+    dcr["_acc_id"],
+    np.where(dcr["_acc_code"] != "", dcr["_acc_code"], dcr[DOCTOR_ID_COL]),
+)
 
 def _row_has_all_required_brands(row, brand_cols, rx_cols, required_norm):
     """True if this row has every required brand with non-NaN, >= 0 Rx."""
@@ -241,7 +256,7 @@ def _row_has_all_required_brands(row, brand_cols, rx_cols, required_norm):
 #   with valid Rx (no cross-row aggregation-only validity).
 # ============================================================
 records = []
-for (div, emp, acc), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_ID_COL]):
+for (div, emp, doc_key), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_KEY_COL]):
     brand_rx = {}
     # Accumulate brand→rx across ALL rows for that doctor; prefer first non-NaN
     for _, row in grp.iterrows():
@@ -282,19 +297,19 @@ for (div, emp, acc), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_ID_COL])
         records.append({
             "Division": div,
             "_emp_key": emp,
-            DOCTOR_ID_COL: acc,
+            DOCTOR_KEY_COL: doc_key,
             "Account: Customer Code": acc_code,
         })
 
 valid_doctors = pd.DataFrame(records)
 # Defensive dedup (no logic change; protects against accidental duplicates)
 if not valid_doctors.empty:
-    valid_doctors = valid_doctors.drop_duplicates(["Division", "_emp_key", DOCTOR_ID_COL])
+    valid_doctors = valid_doctors.drop_duplicates(["Division", "_emp_key", DOCTOR_KEY_COL])
 
 # Unique count of doctors per TBM
 rx_cnt = (
     valid_doctors
-    .groupby(["Division", "_emp_key"])[DOCTOR_ID_COL]
+    .groupby(["Division", "_emp_key"])[DOCTOR_KEY_COL]
     .nunique()
     .reset_index(name="Number of doctors with Rx entered")
 )

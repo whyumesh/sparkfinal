@@ -206,12 +206,39 @@ DOCTOR_ID_COL = "Assignment"
 dcr[DOCTOR_ID_COL] = dcr[DOCTOR_ID_COL].apply(norm_doc_id)
 # >>> End minimal fix <<<
 
+# Doctor key = (Account: Customer Code, Assignment) for identification
+ACCOUNT_CUSTOMER_COL = None
+for c in ["Account: Customer Code", "Customer Code", "Account"]:
+    if c in dcr.columns:
+        ACCOUNT_CUSTOMER_COL = c
+        break
+if ACCOUNT_CUSTOMER_COL is not None:
+    dcr["_acc_code"] = dcr[ACCOUNT_CUSTOMER_COL].map(lambda x: norm_code(x) if pd.notna(x) else "")
+else:
+    dcr["_acc_code"] = ""
+
+def _row_has_all_required_brands(row, brand_cols, rx_cols, required_norm):
+    """True if this row has every required brand with non-NaN, >= 0 Rx."""
+    for rb_norm in required_norm:
+        found = False
+        for b_col, r_col in zip(brand_cols, rx_cols):
+            if norm_brand(row[b_col]) == rb_norm:
+                v = row[r_col]
+                if not pd.isna(v) and v >= 0:
+                    found = True
+                break
+        if not found:
+            return False
+    return True
+
 # ============================================================
 # DOCTOR-LEVEL CONSOLIDATION
 # - A doctor counts for a TBM ONLY IF all required division-brands
 #   appear with Rx not NaN and not negative (zero is allowed).
 # - A doctor with multiple rows is counted ONCE if, across rows,
 #   all required brands meet the rule.
+# - Division 42 only: at least one row must have all 4 required brands
+#   with valid Rx (no cross-row aggregation-only validity).
 # ============================================================
 records = []
 for (div, emp, acc), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_ID_COL]):
@@ -227,6 +254,7 @@ for (div, emp, acc), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_ID_COL])
                 brand_rx[brand] = rx
 
     required = DIVISION_BRAND_MAP.get(div, [])
+    required_norm = [norm_brand(rb) for rb in required]
     valid = True
     for rb in required:
         rb_norm = norm_brand(rb)
@@ -238,11 +266,24 @@ for (div, emp, acc), grp in dcr.groupby(["Division", "_emp_key", DOCTOR_ID_COL])
             valid = False
             break
 
+    # Division 42: require at least one row to have all 4 required brands (avoids
+    # counting doctors who only get all 4 when aggregating across rows)
+    if valid and div == "42":
+        any_row_ok = False
+        for _, row in grp.iterrows():
+            if _row_has_all_required_brands(row, brand_cols, rx_cols, required_norm):
+                any_row_ok = True
+                break
+        if not any_row_ok:
+            valid = False
+
     if valid:
+        acc_code = grp["_acc_code"].iloc[0] if "_acc_code" in grp.columns else ""
         records.append({
             "Division": div,
             "_emp_key": emp,
-            DOCTOR_ID_COL: acc
+            DOCTOR_ID_COL: acc,
+            "Account: Customer Code": acc_code,
         })
 
 valid_doctors = pd.DataFrame(records)
@@ -295,7 +336,7 @@ for c in FINAL_COLS:
 final = final[FINAL_COLS]
 final.to_excel(OUTPUT_FILE, index=False)
 
-print("\n✅ FINAL_OUTPUT.xlsx created successfully")
-print("✅ EHIER_CD-based hierarchy applied (IA* ➜ ABM, RG* ➜ ZBM)")
-print("✅ Doctor-level brand-wise (≥0) logic preserved; Assignment normalized to avoid hidden-duplicate IDs")
-print("✅ All other logic preserved")
+print("\n[OK] FINAL_OUTPUT.xlsx created successfully")
+print("[OK] EHIER_CD-based hierarchy applied (IA* -> ABM, RG* -> ZBM)")
+print("[OK] Doctor-level brand-wise (>=0) logic preserved; Assignment normalized; Div42 row-level check applied")
+print("[OK] All other logic preserved")
